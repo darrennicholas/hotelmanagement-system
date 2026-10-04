@@ -1,0 +1,16 @@
+export type Paginated<T> = { data: T[]; current_page: number; last_page: number; total: number };
+export type Role = { id: number; name: string };
+export type User = { id: number; name: string; email: string; status?: boolean; role?: Role };
+export type Dashboard = { rooms: { total: number; available: number; occupied: number; reserved: number; maintenance: number }; reservations: { today: number; check_ins: number; check_outs: number; cancelled: number }; financial: { today: number; month: number }; occupancy_rate: number };
+export type RoomType = { id: number; name: string; description?: string; capacity: number; base_price: string | number; bed_type?: string; number_of_beds: number; status?: boolean; facilities?: Facility[] };
+export type Room = { id: number; room_number: string; status: string; available_rooms?: number; floor?: number; description?: string; room_type?: RoomType; room_type_id?: number };
+export type Reservation = { id: number; booking_number: string; user_id: number; room_id: number; check_in_date: string; check_out_date: string; number_of_guests: number; number_of_nights: number; room_price: string | number; subtotal: string | number; tax: string | number; discount: string | number; grand_total: string | number; status: string; notes?: string; user?: User; room?: Room; services?: ReservationService[]; payments?: Payment[] };
+export type HotelService = { id: number; name: string; description?: string; price: string | number; status: boolean };
+export type ReservationService = { id: number; hotel_service_id: number; quantity: number; price: string | number; subtotal: string | number; service?: HotelService };
+export type Payment = { id: number; payment_number: string; payment_method: string; amount: string | number; paid_amount: string | number; change_amount: string | number; payment_status: string; paid_at?: string; reservation?: Reservation };
+export type RevenueRow = { date: string; total: string | number };
+export type OccupancyReport = { total_rooms: number; occupied_rooms: number; available_rooms: number; occupancy_rate: number };
+export type ReportReservation = Reservation;
+export type Facility = { id: number; name: string; description?: string; room_types_count?: number; room_types?: { id: number; name: string }[] };
+export type PendingServiceItem = { serviceId: number; serviceName: string; servicePrice: string | number };
+export type PendingServicePayment = { reservationId: number; services: PendingServiceItem[]; quantity: number };
