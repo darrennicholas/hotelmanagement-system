@@ -2,22 +2,33 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\ReservationStatus;
+use App\Enums\RoomStatus;
 use App\Models\ActivityLog;
+use App\Models\Guest;
 use App\Models\HotelService;
+use App\Models\HotelSetting;
 use App\Models\Invoice;
+use App\Models\Membership;
 use App\Models\Reservation;
 use App\Models\Room;
+use App\Models\User;
 use App\Services\ReservationService;
+use App\Services\ReservationStatusService;
+use App\Support\Money;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+use Illuminate\Validation\Rule;
 
 class ReservationController extends Controller
 {
     public function __construct(
-        private ReservationService $service
+        private ReservationService $service,
+        private ReservationStatusService $statusService,
     ) {}
-
 
     /*
     |--------------------------------------------------------------------------
@@ -28,25 +39,18 @@ class ReservationController extends Controller
     public function index(Request $request)
     {
         $request->validate([
-            'search' =>
-                'nullable|string',
+            'search' => 'nullable|string',
 
-            'status' =>
-                'nullable|string',
+            'status' => ['nullable', Rule::enum(ReservationStatus::class)],
 
-            'date' =>
-                'nullable|date_format:Y-m-d',
+            'date' => 'nullable|date_format:Y-m-d',
 
-            'from' =>
-                'nullable|date',
+            'from' => 'nullable|date',
 
-            'to' =>
-                'nullable|date',
+            'to' => 'nullable|date',
 
-            'per_page' =>
-                'nullable|integer|min:1|max:100',
+            'per_page' => 'nullable|integer|min:1|max:100',
         ]);
-
 
         $perPage =
             $request->integer(
@@ -54,9 +58,10 @@ class ReservationController extends Controller
                 15
             );
 
-
         return Reservation::with([
             'user',
+            'guest',
+            'membership',
             'room.roomType',
             'services.service',
             'payments',
@@ -87,7 +92,6 @@ class ReservationController extends Controller
                         $request->input(
                             'search'
                         );
-
 
                     $query->where(
                         function (
@@ -136,11 +140,15 @@ class ReservationController extends Controller
                                         );
                                     }
                                 );
+
+                            $query->orWhereHas('guest', function ($guest) use ($search) {
+                                $guest->where('full_name', 'like', "%{$search}%")
+                                    ->orWhere('phone', 'like', "%{$search}%");
+                            });
                         }
                     );
                 }
             )
-
 
             /*
             |--------------------------------------------------------------------------
@@ -153,15 +161,13 @@ class ReservationController extends Controller
                     'status'
                 ),
 
-                fn ($query) =>
-                    $query->where(
-                        'status',
-                        $request->input(
-                            'status'
-                        )
+                fn ($query) => $query->where(
+                    'status',
+                    $request->input(
+                        'status'
                     )
+                )
             )
-
 
             /*
             |--------------------------------------------------------------------------
@@ -195,22 +201,14 @@ class ReservationController extends Controller
                             'date'
                         );
 
-
-                    $query
-                        ->whereDate(
-                            'check_in_date',
-                            '<=',
-                            $date
-                        )
-
-                        ->whereDate(
-                            'check_out_date',
-                            '>=',
-                            $date
-                        );
+                    $query->where(function ($query) use ($date) {
+                        $query->where(function ($query) use ($date) {
+                            $query->whereDate('check_in_date', '<=', $date)
+                                ->whereDate('check_out_date', '>', $date);
+                        })->orWhereDate('check_out_date', $date);
+                    });
                 }
             )
-
 
             /*
             |--------------------------------------------------------------------------
@@ -223,32 +221,28 @@ class ReservationController extends Controller
                     'from'
                 ),
 
-                fn ($query) =>
-                    $query->whereDate(
-                        'check_in_date',
-                        '>=',
-                        $request->input(
-                            'from'
-                        )
+                fn ($query) => $query->whereDate(
+                    'check_in_date',
+                    '>=',
+                    $request->input(
+                        'from'
                     )
+                )
             )
-
 
             ->when(
                 $request->filled(
                     'to'
                 ),
 
-                fn ($query) =>
-                    $query->whereDate(
-                        'check_out_date',
-                        '<=',
-                        $request->input(
-                            'to'
-                        )
+                fn ($query) => $query->whereDate(
+                    'check_out_date',
+                    '<=',
+                    $request->input(
+                        'to'
                     )
+                )
             )
-
 
             ->latest()
 
@@ -257,263 +251,175 @@ class ReservationController extends Controller
             );
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | STORE
     |--------------------------------------------------------------------------
     */
 
-    public function store(
-        Request $request
-    ) {
+    public function store(Request $request)
+    {
+        $actor = $request->user();
+        $isCustomer = $actor->hasRole('User');
 
-        abort_unless(
-            $request->user()?->hasRole('User'),
-            403,
-            'Hanya user yang dapat membuat reservasi.'
-        );
+        $data = $request->validate([
+            'room_id' => 'required|exists:rooms,id',
+            'user_id' => 'nullable|exists:users,id',
+            'guest_id' => 'nullable|exists:guests,id',
+            'guest' => 'nullable|array',
+            'guest.full_name' => 'required_with:guest|string|max:120',
+            'guest.email' => 'nullable|email|max:255',
+            'guest.phone' => 'nullable|string|max:30',
+            'guest.address' => 'nullable|string',
+            'check_in_date' => 'required|date|after_or_equal:today',
+            'check_out_date' => 'required|date|after:check_in_date',
+            'number_of_guests' => 'required|integer|min:1',
+            'notes' => 'nullable|string',
+            'services' => 'nullable|array',
+            'services.*.hotel_service_id' => 'required|exists:hotel_services,id',
+            'services.*.quantity' => 'required|integer|min:1',
+        ]);
 
-        $data =
-            $request->validate([
+        $customerReferences = array_filter([
+            ! empty($data['user_id']),
+            ! empty($data['guest_id']),
+            ! empty($data['guest']['full_name'] ?? null),
+        ]);
 
-                'user_id' =>
-                    $request->user()->hasRole('User')
-                        ? 'nullable|exists:users,id'
-                        : 'required|exists:users,id',
-
-                'room_id' =>
-                    'required|exists:rooms,id',
-
-                'check_in_date' =>
-                    'required|date|after_or_equal:today',
-
-                'check_out_date' =>
-                    'required|date|after:check_in_date',
-
-                'number_of_guests' =>
-                    'required|integer|min:1',
-
-                'notes' =>
-                    'nullable|string',
-
-                'tax_rate' =>
-                    'nullable|numeric|min:0|max:100',
-
-                'discount' =>
-                    'nullable|numeric|min:0',
+        if ($isCustomer && count($customerReferences) > 1) {
+            throw ValidationException::withMessages([
+                'guest' => 'Akun pengguna tidak dapat digabung dengan data tamu walk-in.',
             ]);
-
-        if ($request->user()->hasRole('User')) {
-            $data['user_id'] = $request->user()->id;
         }
 
+        if (! $isCustomer && count($customerReferences) !== 1) {
+            throw ValidationException::withMessages([
+                'customer' => 'Reservasi harus memiliki tepat satu akun pengguna atau tamu walk-in.',
+            ]);
+        }
 
-        $room =
-            Room::with(
-                'roomType'
-            )->findOrFail(
-                $data['room_id']
+        $targetUser = $isCustomer
+            ? $actor
+            : (! empty($data['user_id']) ? User::with('role')->findOrFail($data['user_id']) : null);
+
+        if ($isCustomer) {
+            $data['user_id'] = $actor->id;
+        }
+
+        if (! $isCustomer && $targetUser && ! $targetUser->hasRole('User')) {
+            abort(422, 'Reservasi hanya dapat dibuat untuk akun dengan role User.');
+        }
+
+        $membership = $targetUser ? Membership::ensureForUser($targetUser) : null;
+        // Membership is automatic for every User. The discount applies when
+        // the booking reaches the membership minimum of two guests.
+        $useMemberDiscount = $membership?->is_active
+            && $data['number_of_guests'] >= max((int) $membership->min_guests, Membership::MINIMUM_GUESTS);
+
+        $guestData = $data['guest'] ?? null;
+        $services = $data['services'] ?? [];
+        unset($data['services']);
+        unset($data['guest']);
+
+        $reservation = DB::transaction(function () use ($data, $guestData, $membership, $request, $useMemberDiscount, $services): Reservation {
+            if ($guestData) {
+                $guestData['created_by'] = $request->user()->id;
+                $data['guest_id'] = Guest::create($guestData)->id;
+            }
+
+            $room = Room::with('roomType')
+                ->lockForUpdate()
+                ->findOrFail($data['room_id']);
+
+            abort_if(
+                $data['number_of_guests'] > $room->roomType->capacity,
+                422,
+                'Kapasitas kamar tidak mencukupi.'
             );
 
-
-        abort_if(
-            $data[
-                'number_of_guests'
-            ] >
-            $room
-                ->roomType
-                ->capacity,
-
-            422,
-
-            'Kapasitas kamar tidak mencukupi.'
-        );
-
-
-        $this
-            ->service
-            ->ensureAvailable(
+            $this->service->ensureAvailable(
                 $room->id,
-                $data[
-                    'check_in_date'
-                ],
-                $data[
-                    'check_out_date'
-                ]
+                $data['check_in_date'],
+                $data['check_out_date']
             );
 
+            $nights = Carbon::parse($data['check_in_date'])
+                ->diffInDays(Carbon::parse($data['check_out_date']));
+            $roomPrice = $room->roomType->base_price;
+            $serviceTotal = '0.00';
 
-        $nights =
-            Carbon::parse(
-                $data[
-                    'check_in_date'
-                ]
-            )
-            ->diffInDays(
-                Carbon::parse(
-                    $data[
-                        'check_out_date'
-                    ]
-                )
+            foreach ($services as $item) {
+                $service = HotelService::findOrFail($item['hotel_service_id']);
+                $serviceTotal = Money::add($serviceTotal, Money::multiply($service->price, (int) $item['quantity']));
+            }
+
+            // Pricing is calculated on the server. The client may request a
+            // member discount, but it cannot override tax or totals.
+            $settings = HotelSetting::current();
+            $taxRate = $settings->tax_rate;
+            $serviceChargeRate = $settings->service_charge_rate;
+            $memberRate = $useMemberDiscount ? $membership->discount_rate : '0.00';
+            $memberDiscount = Money::percent(Money::add(Money::multiply($roomPrice, $nights), $serviceTotal), $memberRate);
+            $totals = $this->service->totals(
+                $roomPrice,
+                $nights,
+                $serviceTotal,
+                $taxRate,
+                $serviceChargeRate,
+                $memberDiscount
             );
 
+            $reservation = Reservation::create(array_merge($data, [
+                'booking_number' => 'TMP-'.Str::uuid(),
+                'membership_id' => $useMemberDiscount ? $membership->id : null,
+                'number_of_nights' => $nights,
+                'room_price' => $roomPrice,
+                'tax_rate' => $taxRate,
+                'service_charge_rate' => $serviceChargeRate,
+                'subtotal' => $totals['subtotal'],
+                'tax' => $totals['tax'],
+                'service_charge' => $totals['service_charge'],
+                'manual_discount' => 0,
+                'member_discount_rate' => $memberRate,
+                'member_min_guests' => $useMemberDiscount ? $membership->min_guests : 0,
+                'member_discount_amount' => $memberDiscount,
+                'discount' => $totals['discount'],
+                'grand_total' => $totals['grand_total'],
+                'status' => $request->user()->hasRole('User') ? ReservationStatus::Pending->value : ReservationStatus::Confirmed->value,
+                'created_by' => $request->user()->id,
+            ]));
 
-        $totals =
-            $this
-                ->service
-                ->totals(
+            $reservation->update([
+                'booking_number' => 'HTL-'.now()->format('Y').'-'.str_pad((string) $reservation->id, 6, '0', STR_PAD_LEFT),
+            ]);
 
-                    (float)
-                        $room
-                            ->roomType
-                            ->base_price,
+            foreach ($services as $item) {
+                $service = HotelService::findOrFail($item['hotel_service_id']);
+                $quantity = (int) $item['quantity'];
 
-                    $nights,
+                $reservation->services()->create([
+                    'hotel_service_id' => $service->id,
+                    'quantity' => $quantity,
+                    'price' => $service->price,
+                    'subtotal' => Money::multiply($service->price, $quantity),
+                ]);
+            }
 
-                    0,
+            $this->service->syncRoomStatus($room->fresh());
 
-                    (float)
-                        (
-                            $data[
-                                'tax_rate'
-                            ] ??
-                            0
-                        ),
+            ActivityLog::recordStatusChange($request->user()->id, 'reservation.created', 'reservation', $reservation->id, null, $reservation->status, $reservation->booking_number);
 
-                    (float)
-                        (
-                            $data[
-                                'discount'
-                            ] ??
-                            0
-                        )
-                );
+            return $reservation;
+        });
 
-
-        $reservation =
-            DB::transaction(
-                function () use (
-                    $data,
-                    $room,
-                    $nights,
-                    $totals,
-                    $request
-                ) {
-
-                    $reservation =
-                        Reservation::create(
-                            array_merge(
-                                $data,
-                                [
-
-                                    'booking_number' =>
-                                        'HTL-' .
-                                        now()->format(
-                                            'Y'
-                                        ) .
-                                        '-' .
-                                        str_pad(
-                                            (string)
-                                                (
-                                                    Reservation::max(
-                                                        'id'
-                                                    ) +
-                                                    1
-                                                ),
-                                            6,
-                                            '0',
-                                            STR_PAD_LEFT
-                                        ),
-
-                                    'number_of_nights' =>
-                                        $nights,
-
-                                    'room_price' =>
-                                        $room
-                                            ->roomType
-                                            ->base_price,
-
-                                    'subtotal' =>
-                                        $totals[
-                                            'subtotal'
-                                        ],
-
-                                    'tax' =>
-                                        $totals[
-                                            'tax'
-                                        ],
-
-                                    'discount' =>
-                                        $totals[
-                                            'discount'
-                                        ],
-
-                                    'grand_total' =>
-                                        $totals[
-                                            'grand_total'
-                                        ],
-
-                                    'status' =>
-                                        'Confirmed',
-
-                                    'created_by' =>
-                                        $request
-                                            ->user()
-                                            ->id,
-                                ]
-                            )
-                        );
-
-
-                    $room->update([
-                        'status' =>
-                            'Reserved',
-
-                        'available_rooms' =>
-                            0,
-                    ]);
-
-
-                    ActivityLog::create([
-
-                        'user_id' =>
-                            $request
-                                ->user()
-                                ->id,
-
-                        'action' =>
-                            'reservation.created',
-
-                        'entity_type' =>
-                            'reservation',
-
-                        'entity_id' =>
-                            $reservation
-                                ->id,
-
-                        'description' =>
-                            $reservation
-                                ->booking_number,
-                    ]);
-
-
-                    return $reservation;
-                }
-            );
-
-
-        return response()->json(
-
-            $reservation->load([
-                'user',
-                'room.roomType',
-            ]),
-
-            201
-        );
+        return response()->json($reservation->load([
+            'user',
+            'guest',
+            'room.roomType',
+            'membership',
+            'services.service',
+        ]), 201);
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -529,13 +435,14 @@ class ReservationController extends Controller
 
         return $reservation->load([
             'user',
+            'guest',
+            'membership',
             'room.roomType',
             'services.service',
             'payments',
             'invoice',
         ]);
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -550,12 +457,20 @@ class ReservationController extends Controller
         $this->ensureReservationAccess($request, $reservation);
 
         abort_if(
+            $request->user()->hasRole('User') && $this->service->netPaid($reservation) > 0,
+            422,
+            'Reservasi yang sudah memiliki pembayaran hanya dapat diubah oleh staff.'
+        );
+
+        abort_if(
             in_array(
                 $reservation->status,
                 [
-                    'Checked Out',
-                    'Completed',
-                    'Cancelled',
+                    ReservationStatus::CheckedIn->value,
+                    ReservationStatus::CheckedOut->value,
+                    ReservationStatus::Completed->value,
+                    ReservationStatus::Cancelled->value,
+                    ReservationStatus::NoShow->value,
                 ]
             ),
 
@@ -564,190 +479,52 @@ class ReservationController extends Controller
             'Reservasi sudah tidak dapat diubah.'
         );
 
+        $data = $request->validate([
+            'room_id' => 'sometimes|exists:rooms,id',
+            'check_in_date' => 'sometimes|date|after_or_equal:today',
+            'check_out_date' => 'sometimes|date',
+            'number_of_guests' => 'sometimes|integer|min:1',
+            'notes' => 'nullable|string',
+        ]);
 
-        $data =
-            $request->validate([
+        return DB::transaction(function () use ($data, $reservation) {
+            $lockedReservation = Reservation::query()->lockForUpdate()->findOrFail($reservation->id);
+            $roomId = $data['room_id'] ?? $lockedReservation->room_id;
+            $in = $data['check_in_date'] ?? Carbon::parse($lockedReservation->check_in_date)->toDateString();
+            $out = $data['check_out_date'] ?? Carbon::parse($lockedReservation->check_out_date)->toDateString();
 
-                'room_id' =>
-                    'sometimes|exists:rooms,id',
+            abort_unless($out > $in, 422, 'Tanggal check-out harus setelah check-in.');
 
-                'check_in_date' =>
-                    'sometimes|date',
+            $room = Room::with('roomType')->lockForUpdate()->findOrFail($roomId);
+            abort_if(in_array($room->status, [RoomStatus::Maintenance->value, RoomStatus::Cleaning->value, RoomStatus::OutOfOrder->value], true), 422, 'Kamar tidak dapat dijual pada status '.$room->status.'.');
+            $this->service->ensureAvailable($room->id, $in, $out, $lockedReservation->id);
 
-                'check_out_date' =>
-                    'sometimes|date',
+            $numberOfGuests = $data['number_of_guests'] ?? $lockedReservation->number_of_guests;
+            abort_if($numberOfGuests > $room->roomType->capacity, 422, 'Kapasitas kamar tidak mencukupi.');
 
-                'number_of_guests' =>
-                    'sometimes|integer|min:1',
+            if (Money::compare($lockedReservation->member_discount_rate, '0.00') > 0) {
+                $minimumMemberGuests = max((int) $lockedReservation->member_min_guests, 2);
+                abort_if($numberOfGuests < $minimumMemberGuests, 422, 'Member discount hanya berlaku untuk pesanan minimal '.$minimumMemberGuests.' orang.');
+            }
 
-                'notes' =>
-                    'nullable|string',
-            ]);
+            $oldRoom = Room::lockForUpdate()->findOrFail($lockedReservation->room_id);
+            $nights = Carbon::parse($in)->diffInDays(Carbon::parse($out));
+            $lockedReservation->update(array_merge($data, [
+                'number_of_nights' => $nights,
+                'room_price' => $room->roomType->base_price,
+            ]));
+            $this->service->recalculate($lockedReservation->fresh());
 
+            if ($oldRoom->id !== $room->id) {
+                $this->service->syncRoomStatus($oldRoom);
+                $this->service->syncRoomStatus($room);
+            } else {
+                $this->service->syncRoomStatus($room->fresh());
+            }
 
-        $roomId =
-            $data[
-                'room_id'
-            ] ??
-            $reservation
-                ->room_id;
-
-
-        $in =
-            $data[
-                'check_in_date'
-            ] ??
-            Carbon::parse(
-                $reservation
-                    ->check_in_date
-            )->toDateString();
-
-
-        $out =
-            $data[
-                'check_out_date'
-            ] ??
-            Carbon::parse(
-                $reservation
-                    ->check_out_date
-            )->toDateString();
-
-
-        if ($out <= $in) {
-
-            return response()->json([
-                'message' =>
-                    'Tanggal check-out harus setelah check-in.',
-            ], 422);
-        }
-
-
-        $this
-            ->service
-            ->ensureAvailable(
-                $roomId,
-                $in,
-                $out,
-                $reservation->id
-            );
-
-
-        $room =
-            Room::with(
-                'roomType'
-            )->findOrFail(
-                $roomId
-            );
-
-
-        $numberOfGuests =
-            $data[
-                'number_of_guests'
-            ] ??
-            $reservation
-                ->number_of_guests;
-
-
-        abort_if(
-            $numberOfGuests >
-            $room
-                ->roomType
-                ->capacity,
-
-            422,
-
-            'Kapasitas kamar tidak mencukupi.'
-        );
-
-
-        $nights =
-            Carbon::parse(
-                $in
-            )->diffInDays(
-                Carbon::parse(
-                    $out
-                )
-            );
-
-
-        $totals =
-            $this
-                ->service
-                ->totals(
-
-                    (float)
-                        $room
-                            ->roomType
-                            ->base_price,
-
-                    $nights
-                );
-
-
-        $oldRoom =
-            $reservation
-                ->room;
-
-
-        $reservation->update(
-            array_merge(
-                $data,
-                [
-
-                    'number_of_nights' =>
-                        $nights,
-
-                    'room_price' =>
-                        $room
-                            ->roomType
-                            ->base_price,
-
-                    'subtotal' =>
-                        $totals[
-                            'subtotal'
-                        ],
-
-                    'grand_total' =>
-                        $totals[
-                            'grand_total'
-                        ],
-                ]
-            )
-        );
-
-
-        if (
-            $oldRoom->id !==
-            $room->id
-        ) {
-
-            $oldRoom->update([
-                'status' =>
-                    'Available',
-
-                'available_rooms' =>
-                    1,
-            ]);
-
-
-            $room->update([
-                'status' =>
-                    'Reserved',
-
-                'available_rooms' =>
-                    0,
-            ]);
-        }
-
-
-        return $reservation
-            ->fresh()
-            ->load([
-                'user',
-                'room.roomType',
-            ]);
+            return $lockedReservation->fresh()->load(['user', 'guest', 'room.roomType', 'membership', 'payments']);
+        });
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -760,43 +537,18 @@ class ReservationController extends Controller
         Reservation $reservation
     ) {
         $this->ensureReservationAccess($request, $reservation);
+        $data = $request->validate(['reason' => 'nullable|string|max:500']);
 
-        abort_if(
-            $reservation->status !==
-                'Pending',
+        return DB::transaction(function () use ($data, $request, $reservation) {
+            $reservation = Reservation::query()->lockForUpdate()->findOrFail($reservation->id);
+            abort_if($reservation->status !== ReservationStatus::Pending->value, 422, 'Hanya reservasi pending yang dapat dikonfirmasi.');
+            $this->statusService->transition($reservation, ReservationStatus::Confirmed, $request->user()->id, $data['reason'] ?? null, 'reservation.confirmed');
+            $room = $reservation->room()->lockForUpdate()->firstOrFail();
+            $this->service->syncRoomStatus($room);
 
-            422,
-
-            'Hanya reservasi pending yang dapat dikonfirmasi.'
-        );
-
-
-        $reservation->update([
-            'status' =>
-                'Confirmed',
-        ]);
-
-
-        $reservation
-            ->room()
-            ->update([
-
-                'status' =>
-                    'Reserved',
-
-                'available_rooms' =>
-                    0,
-            ]);
-
-
-        return $reservation
-            ->fresh()
-            ->load([
-                'user',
-                'room',
-            ]);
+            return $reservation->fresh()->load(['user', 'guest', 'room.roomType', 'payments']);
+        });
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -814,9 +566,11 @@ class ReservationController extends Controller
             in_array(
                 $reservation->status,
                 [
-                    'Checked Out',
-                    'Completed',
-                    'Cancelled',
+                    ReservationStatus::CheckedIn->value,
+                    ReservationStatus::CheckedOut->value,
+                    ReservationStatus::Completed->value,
+                    ReservationStatus::Cancelled->value,
+                    ReservationStatus::NoShow->value,
                 ]
             ),
 
@@ -825,50 +579,65 @@ class ReservationController extends Controller
             'Reservasi tidak dapat dibatalkan.'
         );
 
-
-        $reservation->update([
-
-            'status' =>
-                'Cancelled',
-
-            'cancelled_by' =>
-                $request
-                    ->user()
-                    ->id,
-
-            'cancelled_at' =>
-                now(),
-
-            'cancellation_reason' =>
-                $request->input(
-                    'reason'
-                ),
+        $data = $request->validate([
+            'reason' => 'required|string|max:500',
         ]);
 
+        return DB::transaction(function () use ($data, $request, $reservation) {
+            $reservation = Reservation::query()->lockForUpdate()->findOrFail($reservation->id);
+            abort_if(in_array($reservation->status, [ReservationStatus::CheckedIn->value, ReservationStatus::CheckedOut->value, ReservationStatus::Completed->value, ReservationStatus::Cancelled->value, ReservationStatus::NoShow->value], true), 422, 'Reservasi tidak dapat dibatalkan.');
+            $netPaid = $this->service->netPaid($reservation);
+            abort_if(
+                $request->user()->hasRole('User') && Money::compare($netPaid, '0.00') > 0,
+                422,
+                'Reservasi berbayar harus dibatalkan oleh staff agar proses refund tercatat.'
+            );
 
-        $reservation
-            ->room()
-            ->update([
-
-                'status' =>
-                    'Available',
-
-                'available_rooms' =>
-                    1,
+            $reservation->update([
+                'cancelled_by' => $request->user()->id,
+                'cancelled_at' => now(),
+                'cancellation_reason' => $data['reason'],
             ]);
+            $this->statusService->transition($reservation, ReservationStatus::Cancelled, $request->user()->id, $data['reason'], 'reservation.cancelled');
+            $this->service->syncRoomStatus($reservation->room()->lockForUpdate()->firstOrFail());
 
+            $result = $reservation->fresh()->load(['user', 'guest', 'room.roomType', 'payments']);
+            $result->setAttribute('refund_due', $netPaid);
 
-        return $reservation;
+            return $result;
+        });
     }
 
+    public function noShow(Request $request, Reservation $reservation)
+    {
+        $data = $request->validate([
+            'reason' => 'nullable|string|max:500',
+        ]);
+
+        return DB::transaction(function () use ($data, $request, $reservation) {
+            $reservation = Reservation::query()->lockForUpdate()->findOrFail($reservation->id);
+            abort_unless(in_array($reservation->status, [ReservationStatus::Pending->value, ReservationStatus::Confirmed->value], true), 422, 'Hanya reservasi aktif yang dapat ditandai no-show.');
+            abort_if(Carbon::today()->lt(Carbon::parse($reservation->check_in_date)), 422, 'No-show baru dapat dicatat pada atau setelah tanggal check-in.');
+
+            $reservation->update([
+                'no_show_at' => now(),
+                'no_show_by' => $request->user()->id,
+                'notes' => trim(collect([$reservation->notes, $data['reason'] ?? null])->filter()->implode(PHP_EOL)),
+            ]);
+            $this->statusService->transition($reservation, ReservationStatus::NoShow, $request->user()->id, $data['reason'] ?? null, 'reservation.no_show');
+            $this->service->syncRoomStatus($reservation->room()->lockForUpdate()->firstOrFail());
+
+            return $reservation->fresh()->load(['user', 'guest', 'room.roomType', 'payments']);
+        });
+    }
 
     /*
     |--------------------------------------------------------------------------
     | CHECK-IN
     |--------------------------------------------------------------------------
     |
-    | Check-in hanya dapat dilakukan
-    | tepat pada check_in_date.
+    | Check-in sesuai jadwal tidak memerlukan override. Check-in lebih awal
+    | atau setelah jadwal wajib menyimpan alasan staff pada audit reservasi.
     |
     */
 
@@ -878,146 +647,39 @@ class ReservationController extends Controller
     ) {
         $this->ensureReservationAccess($request, $reservation);
 
-        abort_if(
-            $reservation->status !==
-                'Confirmed',
-
-            422,
-
-            'Reservasi harus berstatus Confirmed.'
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | DATE
-        |--------------------------------------------------------------------------
-        */
-
-        $checkInDate =
-            Carbon::parse(
-                $reservation
-                    ->check_in_date
-            );
-
-
-        abort_unless(
-            $checkInDate->isToday(),
-
-            422,
-
-            'Check-in hanya dapat dilakukan pada tanggal ' .
-                $checkInDate->format(
-                    'd-m-Y'
-                ) .
-                '.'
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | PAYMENT
-        |--------------------------------------------------------------------------
-        */
-
-        $paidAmount =
-            (float)
-            $reservation
-                ->payments()
-                ->where(
-                    'payment_status',
-                    'Paid'
-                )
-                ->sum(
-                    'amount'
-                );
-
-
-        abort_unless(
-            $paidAmount >=
-            (float)
-                $reservation
-                    ->grand_total,
-
-            422,
-
-            'Pembayaran harus diselesaikan sebelum check-in.'
-        );
-
-
-        /*
-        |--------------------------------------------------------------------------
-        | UPDATE
-        |--------------------------------------------------------------------------
-        */
-
-        $reservation->update([
-
-            'status' =>
-                'Checked In',
-
-            'checked_in_at' =>
-                now(),
+        $data = $request->validate([
+            'override_reason' => 'nullable|string|max:500',
         ]);
 
+        return DB::transaction(function () use ($data, $request, $reservation) {
+            $reservation = Reservation::query()->lockForUpdate()->findOrFail($reservation->id);
+            abort_if($reservation->status !== ReservationStatus::Confirmed->value, 422, 'Reservasi harus berstatus Confirmed.');
 
-        $reservation
-            ->room()
-            ->update([
+            $checkInDate = Carbon::parse($reservation->check_in_date);
+            $checkOutDate = Carbon::parse($reservation->check_out_date);
+            $isOutsideSchedule = Carbon::today()->lt($checkInDate) || ! Carbon::today()->lt($checkOutDate);
+            abort_if($isOutsideSchedule && empty($data['override_reason']), 422, 'Check-in di luar jadwal membutuhkan alasan override dari staff.');
 
-                'status' =>
-                    'Occupied',
-
-                'available_rooms' =>
-                    0,
+            $reservation->update([
+                'checked_in_at' => now(),
+                'arrival_override_reason' => $data['override_reason'] ?? null,
             ]);
+            $room = $reservation->room()->lockForUpdate()->firstOrFail();
+            $room->update(['status' => RoomStatus::Occupied->value, 'available_rooms' => 0]);
 
+            $this->statusService->transition($reservation, ReservationStatus::CheckedIn, $request->user()->id, $data['override_reason'] ?? null, 'reservation.check_in');
 
-        ActivityLog::create([
-
-            'user_id' =>
-                $request
-                    ->user()
-                    ->id,
-
-            'action' =>
-                'reservation.check_in',
-
-            'entity_type' =>
-                'reservation',
-
-            'entity_id' =>
-                $reservation
-                    ->id,
-        ]);
-
-
-        return $reservation
-            ->fresh()
-            ->load([
-                'user',
-                'room',
-            ]);
+            return $reservation->fresh()->load(['user', 'guest', 'room.roomType', 'payments']);
+        });
     }
-
 
     /*
     |--------------------------------------------------------------------------
     | CHECK-OUT
     |--------------------------------------------------------------------------
     |
-    | PERUBAHAN UTAMA:
-    |
-    | Checkout hanya dapat dilakukan
-    | tepat pada tanggal check_out_date.
-    |
-    | Contoh:
-    |
-    | check_out_date = 2026-10-04
-    |
-    | 03 Oktober -> DITOLAK
-    | 04 Oktober -> BOLEH
-    | 05 Oktober -> DITOLAK
+    | Checkout lebih awal atau terlambat diperbolehkan dengan alasan override.
+    | Folio tetap harus lunas agar invoice final dapat diterbitkan.
     |
     */
 
@@ -1027,8 +689,13 @@ class ReservationController extends Controller
     ) {
         $this->ensureReservationAccess($request, $reservation);
 
+        $data = $request->validate([
+            'override_reason' => 'nullable|string|max:500',
+        ]);
+
         return DB::transaction(
             function () use (
+                $data,
                 $request,
                 $reservation
             ) {
@@ -1047,7 +714,6 @@ class ReservationController extends Controller
                                 ->id
                         );
 
-
                 /*
                 |--------------------------------------------------------------------------
                 | STATUS
@@ -1055,14 +721,12 @@ class ReservationController extends Controller
                 */
 
                 abort_if(
-                    $reservation->status !==
-                        'Checked In',
+                    $reservation->status !== ReservationStatus::CheckedIn->value,
 
                     422,
 
                     'Hanya reservasi Checked In yang dapat check-out.'
                 );
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1070,25 +734,12 @@ class ReservationController extends Controller
                 |--------------------------------------------------------------------------
                 */
 
-                $checkOutDate =
-                    Carbon::parse(
-                        $reservation
-                            ->check_out_date
-                    );
-
-
-                abort_unless(
-                    $checkOutDate->isToday(),
-
+                $checkOutDate = Carbon::parse($reservation->check_out_date);
+                abort_if(
+                    ! $checkOutDate->isToday() && empty($data['override_reason']),
                     422,
-
-                    'Check-out hanya dapat dilakukan pada tanggal ' .
-                        $checkOutDate->format(
-                            'd-m-Y'
-                        ) .
-                        '.'
+                    'Check-out lebih awal atau terlambat membutuhkan alasan override dari staff.'
                 );
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1096,41 +747,12 @@ class ReservationController extends Controller
                 |--------------------------------------------------------------------------
                 */
 
-                $paidAmount =
-                    (float)
-                    $reservation
-                        ->payments()
-                        ->where(
-                            'payment_status',
-                            'Paid'
-                        )
-                        ->sum(
-                            'amount'
-                        );
-
-
-                abort_unless(
-                    $paidAmount >=
-                    (float)
-                        $reservation
-                            ->grand_total,
-
-                    422,
-
-                    'Pembayaran harus diselesaikan sebelum check-out.'
-                );
-
-
-                /*
-                |--------------------------------------------------------------------------
-                | RECALCULATE
-                |--------------------------------------------------------------------------
-                */
-
-                $this->recalculate(
-                    $reservation
-                );
-
+                $this->service->recalculate($reservation);
+                $reservation->refresh();
+                $paidAmount = $this->service->netPaid($reservation);
+                $balance = $this->service->balance($reservation);
+                $balanceForDisplay = intdiv(Money::toCents($balance) + 50, 100);
+                abort_if(Money::compare($balance, '0.00') > 0, 422, 'Sisa tagihan '.number_format($balanceForDisplay, 0, ',', '.').' harus diselesaikan sebelum check-out.');
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1139,14 +761,10 @@ class ReservationController extends Controller
                 */
 
                 $reservation->update([
+                    'checked_out_at' => now(),
 
-                    'status' =>
-                        'Checked Out',
-
-                    'checked_out_at' =>
-                        now(),
+                    'departure_override_reason' => $data['override_reason'] ?? null,
                 ]);
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1154,17 +772,10 @@ class ReservationController extends Controller
                 |--------------------------------------------------------------------------
                 */
 
-                $reservation
-                    ->room()
-                    ->update([
-
-                        'status' =>
-                            'Available',
-
-                        'available_rooms' =>
-                            1,
-                    ]);
-
+                $reservation->room()->update([
+                    'status' => RoomStatus::Cleaning->value,
+                    'available_rooms' => 0,
+                ]);
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1175,19 +786,17 @@ class ReservationController extends Controller
                 Invoice::updateOrCreate(
 
                     [
-                        'reservation_id' =>
-                            $reservation
-                                ->id,
+                        'reservation_id' => $reservation
+                            ->id,
                     ],
 
                     [
 
-                        'invoice_number' =>
-                            'INV-' .
+                        'invoice_number' => 'INV-'.
                             now()->format(
                                 'Ymd'
-                            ) .
-                            '-' .
+                            ).
+                            '-'.
                             str_pad(
                                 (string)
                                     $reservation
@@ -1197,27 +806,28 @@ class ReservationController extends Controller
                                 STR_PAD_LEFT
                             ),
 
-                        'subtotal' =>
-                            $reservation
-                                ->subtotal,
+                        'subtotal' => $reservation
+                            ->subtotal,
 
-                        'tax' =>
-                            $reservation
-                                ->tax,
+                        'tax' => $reservation
+                            ->tax,
 
-                        'discount' =>
-                            $reservation
-                                ->discount,
+                        'service_charge' => $reservation
+                            ->service_charge,
 
-                        'grand_total' =>
-                            $reservation
-                                ->grand_total,
+                        'discount' => $reservation
+                            ->discount,
 
-                        'issued_at' =>
-                            now(),
+                        'grand_total' => $reservation
+                            ->grand_total,
+
+                        'paid_total' => $paidAmount,
+
+                        'balance_due' => $balance,
+
+                        'issued_at' => now(),
                     ]
                 );
-
 
                 /*
                 |--------------------------------------------------------------------------
@@ -1225,29 +835,13 @@ class ReservationController extends Controller
                 |--------------------------------------------------------------------------
                 */
 
-                ActivityLog::create([
-
-                    'user_id' =>
-                        $request
-                            ->user()
-                            ->id,
-
-                    'action' =>
-                        'reservation.check_out',
-
-                    'entity_type' =>
-                        'reservation',
-
-                    'entity_id' =>
-                        $reservation
-                            ->id,
-                ]);
-
+                $this->statusService->transition($reservation, ReservationStatus::CheckedOut, $request->user()->id, $data['override_reason'] ?? null, 'reservation.check_out');
 
                 return $reservation
                     ->fresh()
                     ->load([
                         'user',
+                        'guest',
                         'room',
                         'services.service',
                         'invoice',
@@ -1255,7 +849,6 @@ class ReservationController extends Controller
             }
         );
     }
-
 
     /*
     |--------------------------------------------------------------------------
@@ -1272,54 +865,39 @@ class ReservationController extends Controller
         $data =
             $request->validate([
 
-                'hotel_service_id' =>
-                    'required|exists:hotel_services,id',
+                'hotel_service_id' => 'required|exists:hotel_services,id',
 
-                'quantity' =>
-                    'required|integer|min:1',
+                'quantity' => 'required|integer|min:1',
             ]);
 
-
-        $serviceModel =
-            HotelService::findOrFail(
-                $data[
-                    'hotel_service_id'
-                ]
-            );
-
-
-        $service =
-            $reservation
-                ->services()
-                ->create([
-
-                    'hotel_service_id' =>
-                        $data[
-                            'hotel_service_id'
-                        ],
-
-                    'quantity' =>
-                        $data[
-                            'quantity'
-                        ],
-
-                    'price' =>
-                        $serviceModel
-                            ->price,
-
-                    'subtotal' =>
-                        $serviceModel
-                            ->price *
-                        $data[
-                            'quantity'
-                        ],
-                ]);
-
-
-        $this->recalculate(
-            $reservation
+        $serviceModel = HotelService::findOrFail(
+            $data[
+                'hotel_service_id'
+            ]
         );
 
+        $service = DB::transaction(function () use ($data, $request, $reservation, $serviceModel) {
+            $lockedReservation = Reservation::query()->lockForUpdate()->findOrFail($reservation->id);
+            abort_if(in_array($lockedReservation->status, [ReservationStatus::Cancelled->value, ReservationStatus::CheckedOut->value, ReservationStatus::Completed->value, ReservationStatus::NoShow->value], true), 422, 'Reservasi ini tidak dapat menerima service baru.');
+
+            $service = $lockedReservation->services()->create([
+                'hotel_service_id' => $data['hotel_service_id'],
+                'quantity' => $data['quantity'],
+                'price' => $serviceModel->price,
+                'subtotal' => Money::multiply($serviceModel->price, (int) $data['quantity']),
+            ]);
+            $this->service->recalculate($lockedReservation->fresh());
+            ActivityLog::create([
+                'user_id' => $request->user()->id,
+                'action' => 'reservation.service_added',
+                'entity_type' => 'reservation',
+                'entity_id' => $lockedReservation->id,
+                'description' => $serviceModel->name.' x '.$data['quantity'],
+                'created_at' => now(),
+            ]);
+
+            return $service;
+        });
 
         return response()->json(
 
@@ -1331,72 +909,11 @@ class ReservationController extends Controller
         );
     }
 
-
     /*
     |--------------------------------------------------------------------------
     | RECALCULATE
     |--------------------------------------------------------------------------
     */
-
-    private function recalculate(
-        Reservation $reservation
-    ): void {
-
-        $serviceTotal =
-            $reservation
-                ->services()
-                ->sum(
-                    'subtotal'
-                );
-
-
-        $totals =
-            $this
-                ->service
-                ->totals(
-
-                    (float)
-                        $reservation
-                            ->room_price,
-
-                    (int)
-                        $reservation
-                            ->number_of_nights,
-
-                    (float)
-                        $serviceTotal,
-
-                    0,
-
-                    (float)
-                        $reservation
-                            ->discount
-                );
-
-
-        $reservation->update([
-
-            'subtotal' =>
-                $totals[
-                    'subtotal'
-                ],
-
-            'tax' =>
-                $reservation
-                    ->tax,
-
-            'grand_total' =>
-                $totals[
-                    'subtotal'
-                ] +
-                (float)
-                    $reservation
-                        ->tax -
-                (float)
-                    $reservation
-                        ->discount,
-        ]);
-    }
 
     private function ensureReservationAccess(Request $request, Reservation $reservation): void
     {

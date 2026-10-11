@@ -5,12 +5,13 @@
 import {
     useCallback,
     useEffect,
+    useRef,
     useState,
 } from 'react';
 
 import styles from './page.module.css';
 
-import { api } from '@/services/api';
+import { api, apiCached } from '@/services/api';
 
 import {
     confirmAction,
@@ -30,6 +31,7 @@ import type {
     Dashboard,
     Facility,
     HotelService,
+    HotelSettings,
     OccupancyReport,
     Paginated,
     Payment,
@@ -67,6 +69,7 @@ import {
     Empty,
     ErrorNotice,
     Panel,
+    UiIcon,
 } from '@/components/ui';
 
 
@@ -333,6 +336,17 @@ export default function Home() {
             Role[]
         >([]);
 
+    const [settings, setSettings] = useState<HotelSettings>({ id: 0, tax_rate: 0, service_charge_rate: 0, currency: 'IDR' });
+
+    const emptyPage = <T,>(): Paginated<T> => ({ data: [], current_page: 1, last_page: 1, total: 0 });
+    const [roomPagination, setRoomPagination] = useState<Paginated<Room>>(emptyPage);
+    const [reservationPagination, setReservationPagination] = useState<Paginated<Reservation>>(emptyPage);
+    const [paymentPagination, setPaymentPagination] = useState<Paginated<Payment>>(emptyPage);
+    const [userPagination, setUserPagination] = useState<Paginated<User>>(emptyPage);
+    const [dataPage, setDataPage] = useState({ rooms: 1, reservations: 1, payments: 1, users: 1 });
+    const loadAbortRef = useRef<AbortController | null>(null);
+    const loadVersionRef = useRef(0);
+
     const [
         occupancy,
         setOccupancy,
@@ -362,6 +376,10 @@ export default function Home() {
             ReportReservation[]
         >([]);
 
+    const reportToday = today();
+    const [reportFrom, setReportFrom] = useState(`${reportToday.slice(0, 7)}-01`);
+    const [reportTo, setReportTo] = useState(reportToday);
+
 
     /*
     |--------------------------------------------------------------------------
@@ -381,9 +399,12 @@ export default function Home() {
     const isBasicUser =
         user?.role?.name === 'User';
 
+    const isOperationsUser =
+        ['Admin', 'Receptionist', 'Manager'].includes(user?.role?.name ?? '');
+
     const userOnlyMenuItem = {
         label: 'Hotel Surroundings',
-        icon: '✦',
+        icon: 'sparkle',
         group: 'WORKSPACE',
     };
 
@@ -394,7 +415,8 @@ export default function Home() {
                     (item) =>
                         item.label !== 'Overview' &&
                         item.label !== 'Reports' &&
-                        item.label !== 'Users'
+                        item.label !== 'Users' &&
+                        item.label !== 'Check-in / out'
                 )
                 .flatMap((item) => item.label === 'Rooms' ? [item, userOnlyMenuItem] : [item])
             : menu;
@@ -412,6 +434,12 @@ export default function Home() {
                 view: string
             ) => {
 
+                loadAbortRef.current?.abort();
+                const controller = new AbortController();
+                loadAbortRef.current = controller;
+                const requestVersion = ++loadVersionRef.current;
+                const request = <T,>(path: string, options: RequestInit = {}) => api<T>(path, { ...options, signal: controller.signal });
+
                 /*
                 |--------------------------------------------------------------------------
                 | ROLE GUARD
@@ -424,6 +452,7 @@ export default function Home() {
                         'Overview',
                         'Reports',
                         'Users',
+                        'Check-in / out',
                     ].includes(view)
                 ) {
                     setBusy(false);
@@ -455,28 +484,28 @@ export default function Home() {
                         ] =
                             await Promise.all(
                                 [
-                                    api<Dashboard>(
+                                    request<Dashboard>(
                                         `/dashboard?date=${encodeURIComponent(
                                             selectedDate
                                         )}`
                                     ),
 
-                                    api<
-                                        Paginated<Room>
-                                    >(
-                                        '/rooms?per_page=100'
-                                    ),
+                                    request<Paginated<Room>>(`/rooms?per_page=25&page=${dataPage.rooms}`),
                                 ]
                             );
+
+                        if (controller.signal.aborted || requestVersion !== loadVersionRef.current) return;
 
                         setDashboard(
                             stats
                         );
 
                         setRooms(
-                            roomData.data ??
-                            []
+                            roomData.data
                         );
+                        setRoomPagination(roomData);
+                        setSettings(await apiCached<HotelSettings>('/settings', controller.signal));
+
                     }
 
 
@@ -496,41 +525,37 @@ export default function Home() {
                         ] =
                             await Promise.all(
                                 [
-                                    api<
-                                        Paginated<Room>
-                                    >(
-                                        '/rooms?per_page=100'
-                                    ),
+                                    request<Paginated<Room>>(`/rooms?per_page=25&page=${dataPage.rooms}`),
 
-                                    api<
-                                        Paginated<RoomType>
-                                    >(
-                                        '/room-types?per_page=100'
-                                    ),
+                                    apiCached<Paginated<RoomType>>('/room-types?per_page=100', controller.signal),
                                 ]
                             );
 
+                        if (controller.signal.aborted || requestVersion !== loadVersionRef.current) return;
+
                         setRooms(
-                            roomData.data ??
-                            []
+                            roomData.data
                         );
+                        setRoomPagination(roomData);
 
                         setRoomTypes(
-                            typeData.data ??
-                            []
+                            typeData.data
                         );
+                        setSettings(await apiCached<HotelSettings>('/settings', controller.signal));
                     }
 
                     if (
                         view ===
                         'Hotel Surroundings'
                     ) {
-                        const roomData = await api<Paginated<Room>>('/rooms?per_page=100');
+                        const roomResponse = await request<Paginated<Room>>(`/rooms?per_page=25&page=${dataPage.rooms}`);
+                        const roomData = roomResponse.data;
+                        setRoomPagination(roomResponse);
 
                         setRooms(
-                            roomData.data ??
-                            []
+                            roomData
                         );
+                        setSettings(await apiCached<HotelSettings>('/settings', controller.signal));
                     }
 
 
@@ -546,84 +571,61 @@ export default function Home() {
                         view === 'Payments' ||
                         view === 'Services'
                     ) {
-                        let reservationUrl =
-                            '/reservations?per_page=100';
-
-
-                        /*
-                         * Khusus Check-in / out,
-                         * tanggal dikirim ke backend.
-                         */
-
-                        if (
-                            view ===
-                            'Check-in / out'
-                        ) {
-                            reservationUrl +=
-                                `&date=${encodeURIComponent(
-                                    selectedDate
-                                )}`;
-                        }
+                        const reservationUrl =
+                            `/reservations?per_page=${view === 'Reservations' || view === 'Check-in / out' ? 15 : 100}${view === 'Check-in / out' ? `&date=${encodeURIComponent(selectedDate)}` : ''}`;
 
 
                         const [
                             reservationData,
                             userData,
                             roomData,
+                            settingsData,
                         ] =
                             await Promise.all(
                                 [
-                                    api<
-                                        Paginated<Reservation>
-                                    >(
-                                        reservationUrl
-                                    ),
+                                    request<Paginated<Reservation>>(`${reservationUrl}&page=${dataPage.reservations}`),
 
-                                    api<
-                                        Paginated<User>
-                                    >(
-                                        '/users?role=User&per_page=100'
-                                    ),
+                                    request<Paginated<User>>('/users?role=User&per_page=100'),
 
-                                    api<
-                                        Paginated<Room>
-                                    >(
-                                        '/rooms?per_page=100'
+                                    request<Paginated<Room>>(`/rooms?per_page=25&page=${dataPage.rooms}`),
+
+                                    request<HotelSettings>(
+                                        '/settings'
                                     ),
                                 ]
                             );
 
                         setReservations(
-                            reservationData.data ??
-                            []
+                            reservationData.data
                         );
+                        setReservationPagination(reservationData);
 
                         setUsers(
-                            userData.data ??
-                            []
+                            userData.data
                         );
 
                         setRooms(
-                            roomData.data ??
-                            []
+                            roomData.data
                         );
+                        setRoomPagination(roomData);
+
+                        setSettings(settingsData);
+
+                        if (view === 'Reservations') {
+                            setServices(await apiCached<HotelService[]>('/services', controller.signal));
+                        }
 
 
                         if (
                             view ===
                             'Payments'
                         ) {
-                            const paymentData =
-                                await api<
-                                    Paginated<Payment>
-                                >(
-                                    '/payments?per_page=100'
-                                );
+                            const paymentData = await request<Paginated<Payment>>(`/payments?per_page=25&page=${dataPage.payments}`);
 
                             setPayments(
-                                paymentData.data ??
-                                []
+                                paymentData.data
                             );
+                            setPaymentPagination(paymentData);
                         }
                     }
 
@@ -638,17 +640,12 @@ export default function Home() {
                         view ===
                         'Users'
                     ) {
-                        const data =
-                            await api<
-                                Paginated<User>
-                            >(
-                                '/users?role=User&per_page=100'
-                            );
+                        const userResponse = await request<Paginated<User>>(`/users?role=User&per_page=25&page=${dataPage.users}`);
 
                         setUsers(
-                            data.data ??
-                            []
+                            userResponse.data
                         );
+                        setUserPagination(userResponse);
                     }
 
 
@@ -662,6 +659,7 @@ export default function Home() {
                         view ===
                         'Reports'
                     ) {
+                        const reportQuery = `?from=${encodeURIComponent(reportFrom)}&to=${encodeURIComponent(reportTo)}`;
                         const [
                             occupancyData,
                             revenueData,
@@ -669,25 +667,27 @@ export default function Home() {
                         ] =
                             await Promise.all(
                                 [
-                                    api<
+                                    request<
                                         OccupancyReport
                                     >(
-                                        '/reports/occupancy'
+                                        `/reports/occupancy?date=${encodeURIComponent(reportTo)}`
                                     ),
 
-                                    api<
+                                    request<
                                         RevenueRow[]
                                     >(
-                                        '/reports/revenue'
+                                        `/reports/revenue${reportQuery}`
                                     ),
 
-                                    api<
+                                    request<
                                         ReportReservation[]
                                     >(
-                                        '/reports/reservations'
+                                        `/reports/reservations${reportQuery}`
                                     ),
                                 ]
                             );
+
+                        if (controller.signal.aborted || requestVersion !== loadVersionRef.current) return;
 
                         setOccupancy(
                             occupancyData
@@ -700,6 +700,7 @@ export default function Home() {
                         setReportReservations(
                             reportData
                         );
+                        setSettings(await apiCached<HotelSettings>('/settings', controller.signal));
                     }
 
 
@@ -714,7 +715,7 @@ export default function Home() {
                         'Services'
                     ) {
                         setServices(
-                            await api<
+                            await request<
                                 HotelService[]
                             >(
                                 `/services${
@@ -745,17 +746,13 @@ export default function Home() {
                             typeData,
                         ] =
                             await Promise.all([
-                                api<
+                                request<
                                     Facility[]
                                 >(
                                     '/facilities'
                                 ),
 
-                                api<
-                                    Paginated<RoomType>
-                                >(
-                                    '/room-types?per_page=100'
-                                ),
+                                apiCached<Paginated<RoomType>>('/room-types?per_page=100', controller.signal),
                             ]);
 
                         setFacilities(
@@ -763,8 +760,7 @@ export default function Home() {
                         );
 
                         setRoomTypes(
-                            typeData.data ??
-                            []
+                            typeData.data
                         );
                     }
 
@@ -789,13 +785,9 @@ export default function Home() {
                         ] =
                             await Promise.all(
                                 [
-                                    api<
-                                        Paginated<User>
-                                    >(
-                                        '/users?per_page=100'
-                                    ),
+                                    request<Paginated<User>>(`/users?per_page=25&page=${dataPage.users}`),
 
-                                    api<
+                                    request<
                                         Role[]
                                     >(
                                         '/roles'
@@ -804,9 +796,9 @@ export default function Home() {
                             );
 
                         setUsers(
-                            userData.data ??
-                            []
+                            userData.data
                         );
+                        setUserPagination(userData);
 
                         setRoles(
                             roleData
@@ -816,19 +808,24 @@ export default function Home() {
                 } catch (
                     err
                 ) {
+                    if (controller.signal.aborted || (err instanceof DOMException && err.name === 'AbortError')) return;
                     setError(
                         err instanceof Error
                             ? err.message
                             : 'Data gagal dimuat.'
                     );
                 } finally {
-                    setBusy(
-                        false
-                    );
+                    if (requestVersion === loadVersionRef.current) setBusy(false);
                 }
             },
             [
                 selectedDate,
+                reportFrom,
+                reportTo,
+                dataPage.rooms,
+                dataPage.reservations,
+                dataPage.payments,
+                dataPage.users,
                 user
                     ?.role
                     ?.name,
@@ -844,20 +841,8 @@ export default function Home() {
 
     useEffect(
         () => {
-            const token =
-                localStorage.getItem(
-                    'hotel_token'
-                );
-
-            if (
-                !token
-            ) {
-                setLoading(
-                    false
-                );
-
-                return;
-            }
+            // Remove tokens created by the previous localStorage-based auth flow.
+            localStorage.removeItem('hotel_token');
 
             api<User>(
                 '/user'
@@ -879,10 +864,7 @@ export default function Home() {
                     }
                 )
                 .catch(
-                    () =>
-                        localStorage.removeItem(
-                            'hotel_token'
-                        )
+                    () => setUser(null)
                 )
                 .finally(
                     () =>
@@ -893,6 +875,15 @@ export default function Home() {
         },
         []
     );
+
+    useEffect(() => {
+        const handleUnauthorized = () => {
+            loadAbortRef.current?.abort();
+            setUser(null);
+        };
+        window.addEventListener('hotel:unauthorized', handleUnauthorized);
+        return () => window.removeEventListener('hotel:unauthorized', handleUnauthorized);
+    }, []);
 
 
     /*
@@ -915,6 +906,7 @@ export default function Home() {
                     'Overview',
                     'Reports',
                     'Users',
+                    'Check-in / out',
                 ].includes(
                     active
                 )
@@ -954,6 +946,8 @@ export default function Home() {
         ]
     );
 
+    useEffect(() => () => loadAbortRef.current?.abort(), []);
+
 
     /*
     |--------------------------------------------------------------------------
@@ -966,16 +960,6 @@ export default function Home() {
             void load(
                 active
             );
-
-            if (
-                active !==
-                    'Overview' &&
-                !isBasicUser
-            ) {
-                void load(
-                    'Overview'
-                );
-            }
         };
 
 
@@ -1060,10 +1044,6 @@ export default function Home() {
                  * Local logout tetap dilakukan.
                  */
             }
-
-            localStorage.removeItem(
-                'hotel_token'
-            );
 
             await successAlert(
                 'Berhasil logout',
@@ -1200,11 +1180,7 @@ export default function Home() {
                                         )
                                     }
                                 >
-                                    <span>
-                                        {
-                                            item.icon
-                                        }
-                                    </span>
+                                    <span><UiIcon name={item.icon as Parameters<typeof UiIcon>[0]['name']} /></span>
 
                                     {
                                         item.label
@@ -1258,25 +1234,6 @@ export default function Home() {
                     }
                 >
                     <div>
-                        <div
-                            className={
-                                styles.headerTopline
-                            }
-                        >
-                            <p
-                                className={
-                                    styles.breadcrumb
-                                }
-                            >
-                                WORKSPACE /{' '}
-
-                                {
-                                    active.toUpperCase()
-                                }
-                            </p>
-                        </div>
-
-
                         <h1>
                             {
                                 pageTitle
@@ -1517,11 +1474,7 @@ export default function Home() {
                                     )
                                 }
                             >
-                                <span>
-                                    {
-                                        item.icon
-                                    }
-                                </span>
+                                <span><UiIcon name={item.icon as Parameters<typeof UiIcon>[0]['name']} /></span>
 
                                 {
                                     item.label
@@ -1558,6 +1511,8 @@ export default function Home() {
                             rooms
                         }
 
+                        currency={settings.currency}
+
                         onRooms={() =>
                             setActive(
                                 'Rooms'
@@ -1588,12 +1543,38 @@ export default function Home() {
                         }
 
                         canCreateReservation={
-                            isBasicUser
+                            isBasicUser || isOperationsUser
+                        }
+
+                        canManageStay={isOperationsUser}
+
+                        canUseMemberDiscount={
+                            Boolean(isBasicUser && user.membership?.is_active)
+                        }
+
+                        memberDiscountRate={
+                            user.membership?.discount_rate
+                        }
+
+                        memberMinimumGuests={
+                            user.membership?.min_guests
                         }
 
                         rooms={
                             rooms
                         }
+
+                        services={
+                            services
+                        }
+
+                        settings={settings}
+
+                        currency={settings.currency}
+
+                        pagination={reservationPagination}
+
+                        onPageChange={(page) => setDataPage((current) => ({ ...current, reservations: page }))}
 
                         selectedDate={
                             selectedDate
@@ -1608,6 +1589,7 @@ export default function Home() {
                                 'Payments'
                             )
                         }
+
                     />
                 )}
 
@@ -1621,6 +1603,7 @@ export default function Home() {
 
                     <RoomsView
                         canManage={user.role?.name === 'Admin'}
+                        canUpdateStatus={isOperationsUser}
                         rooms={
                             rooms
                         }
@@ -1628,6 +1611,12 @@ export default function Home() {
                         roomTypes={
                             roomTypes
                         }
+
+                        currency={settings.currency}
+
+                        pagination={roomPagination}
+
+                        onPageChange={(page) => setDataPage((current) => ({ ...current, rooms: page }))}
 
                         onSaved={
                             reload
@@ -1642,6 +1631,12 @@ export default function Home() {
                         rooms={
                             rooms
                         }
+
+                        currency={settings.currency}
+
+                        pagination={roomPagination}
+
+                        onPageChange={(page) => setDataPage((current) => ({ ...current, rooms: page }))}
                     />
                 )}
 
@@ -1667,12 +1662,38 @@ export default function Home() {
                         }
 
                         canCreateReservation={
-                            isBasicUser
+                            isBasicUser || isOperationsUser
+                        }
+
+                        canManageStay={isOperationsUser}
+
+                        canUseMemberDiscount={
+                            Boolean(isBasicUser && user.membership?.is_active)
+                        }
+
+                        memberDiscountRate={
+                            user.membership?.discount_rate
+                        }
+
+                        memberMinimumGuests={
+                            user.membership?.min_guests
                         }
 
                         rooms={
                             rooms
                         }
+
+                        services={
+                            services
+                        }
+
+                        settings={settings}
+
+                        currency={settings.currency}
+
+                        pagination={reservationPagination}
+
+                        onPageChange={(page) => setDataPage((current) => ({ ...current, reservations: page }))}
 
                         selectedDate={
                             selectedDate
@@ -1701,9 +1722,24 @@ export default function Home() {
                     'Payments' && (
 
                     <PaymentsView
+                        key={`${settings.tax_rate}-${settings.service_charge_rate}`}
                         canPay={
-                            isBasicUser
+                            isBasicUser || isOperationsUser
                         }
+
+                        canRefund={['Admin', 'Manager'].includes(user.role?.name ?? '')}
+
+                        canVoid={user.role?.name === 'Admin'}
+
+                        canManageSettings={user.role?.name === 'Admin'}
+
+                        settings={settings}
+
+                        currency={settings.currency}
+
+                        pagination={paymentPagination}
+
+                        onPageChange={(page) => setDataPage((current) => ({ ...current, payments: page }))}
 
                         payments={
                             payments
@@ -1756,6 +1792,21 @@ export default function Home() {
                         reservations={
                             reportReservations
                         }
+
+                        from={
+                            reportFrom
+                        }
+
+                        to={
+                            reportTo
+                        }
+
+                        currency={settings.currency}
+
+                        onFilter={(from, to) => {
+                            setReportFrom(from);
+                            setReportTo(to);
+                        }}
                     />
                 )}
 
@@ -1777,9 +1828,15 @@ export default function Home() {
                             'Admin'
                         }
 
+                        isUser={
+                            isBasicUser
+                        }
+
                         reservations={
                             reservations
                         }
+
+                        currency={settings.currency}
 
                         onSaved={
                             reload
@@ -1849,6 +1906,10 @@ export default function Home() {
                                 roles
                             }
 
+                            pagination={userPagination}
+
+                            onPageChange={(page) => setDataPage((current) => ({ ...current, users: page }))}
+
                             onSaved={
                                 reload
                             }
@@ -1859,7 +1920,6 @@ export default function Home() {
                         <Panel
                             title="Users"
 
-                            subtitle="Akses dibatasi"
                         >
                             <Empty
                                 text="Menu Users hanya dapat diakses oleh Admin."

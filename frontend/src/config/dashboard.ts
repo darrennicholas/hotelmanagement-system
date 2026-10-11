@@ -8,13 +8,13 @@ export const emptyDashboard: Dashboard = {
 };
 
 export const menu = [
-  { label: 'Overview', icon: '⌂', group: 'WORKSPACE' },
-  { label: 'Reservations', icon: '▣', group: 'WORKSPACE' },
-  { label: 'Rooms', icon: '▤', group: 'WORKSPACE' },
-  { label: 'Check-in / out', icon: '◈', group: 'WORKSPACE' },
-  { label: 'Payments', icon: '◇', group: 'MANAGEMENT' },
-  { label: 'Reports', icon: '▥', group: 'MANAGEMENT' },
-  { label: 'Services', icon: '✦', group: 'MANAGEMENT' },
-  { label: 'Facilities', icon: '◇', group: 'MANAGEMENT' },
-  { label: 'Users', icon: '♧', group: 'MANAGEMENT' },
-];
+  { label: 'Overview', icon: 'dashboard', group: 'WORKSPACE' },
+  { label: 'Reservations', icon: 'calendar', group: 'WORKSPACE' },
+  { label: 'Rooms', icon: 'room', group: 'WORKSPACE' },
+  { label: 'Check-in / out', icon: 'check', group: 'WORKSPACE' },
+  { label: 'Payments', icon: 'payment', group: 'MANAGEMENT' },
+  { label: 'Reports', icon: 'report', group: 'MANAGEMENT' },
+  { label: 'Services', icon: 'service', group: 'MANAGEMENT' },
+  { label: 'Facilities', icon: 'facility', group: 'MANAGEMENT' },
+  { label: 'Users', icon: 'user', group: 'MANAGEMENT' },
+] as const;

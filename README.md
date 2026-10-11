@@ -1,77 +1,90 @@
-# Haven Hotel System
+# Haven Hotel Management System
 
-Haven Hotel System adalah aplikasi manajemen operasional hotel. Aplikasi ini menyediakan dashboard untuk reservasi, kamar, check-in/check-out, pembayaran, layanan tambahan, fasilitas, laporan, dan manajemen pengguna.
+Aplikasi manajemen operasional hotel dengan alur reservasi, ketersediaan kamar, tamu walk-in, pembayaran, service tambahan, check-in/check-out, laporan, dan manajemen user.
 
-## Teknologi
+## Stack
 
-- **Frontend:** Next.js 16, React 19, TypeScript, SweetAlert2
-- **Backend:** Laravel 13, PHP 8.3+, Laravel Sanctum
-- **Database:** MySQL untuk development, SQLite in-memory untuk testing
-- **Authentication:** Bearer token melalui Laravel Sanctum
+- Frontend: Next.js 16, React 19, TypeScript, SweetAlert2
+- Backend: Laravel 13, PHP 8.3+, Laravel Sanctum
+- Database: MySQL/MariaDB
+- Testing backend: PHPUnit dan SQLite in-memory
 
 ## Prasyarat
 
-Pastikan perangkat sudah memiliki:
+Install terlebih dahulu:
 
-- PHP >= 8.3 dan ekstensi PHP yang dibutuhkan Laravel
+- PHP 8.3 atau lebih baru dengan ekstensi `pdo_mysql`
 - Composer
-- Node.js dan npm
-- MySQL/MariaDB (misalnya melalui Laragon atau XAMPP)
-- Ekstensi PHP `pdo_sqlite` dan `sqlite3` jika ingin menjalankan feature test
-- Git, jika project diambil dari repository
+- Node.js LTS dan npm
+- MySQL/MariaDB, misalnya melalui Laragon atau XAMPP
+- `pdo_sqlite` dan `sqlite3` jika ingin menjalankan feature test
 
-## Setup cepat
+## Setup dari nol
 
-Jalankan setiap service pada terminal terpisah.
+### 1. Siapkan database
 
-### 1. Backend
+Buat database kosong, misalnya:
 
-```bash
+```sql
+CREATE DATABASE hotel_management CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+### 2. Jalankan backend
+
+PowerShell:
+
+```powershell
 cd backend
 composer install
-cp .env.example .env
+Copy-Item .env.example .env
 php artisan key:generate
 ```
 
-Di Windows PowerShell, gunakan perintah berikut untuk menyalin environment file:
+Edit `backend/.env` dan sesuaikan konfigurasi berikut:
 
-```powershell
-Copy-Item .env.example .env
+```env
+APP_URL=http://localhost:8000
+APP_TIMEZONE=Asia/Jakarta
+DB_CONNECTION=mysql
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_DATABASE=hotel_management
+DB_USERNAME=root
+DB_PASSWORD=
+FRONTEND_URL=http://localhost:3000
 ```
 
-Buat database kosong bernama `hotel_management`, lalu pastikan nilai `DB_*` di `backend/.env` sesuai dengan MySQL lokal. Setelah itu jalankan migration dan seeder:
+Jalankan migration, seeder, dan server:
 
-```bash
+```powershell
 php artisan migrate --seed
 php artisan serve --host=127.0.0.1 --port=8000
 ```
 
 API tersedia di `http://localhost:8000/api`.
 
-### 2. Frontend
+### 3. Jalankan frontend
 
-```bash
+Buka terminal kedua:
+
+```powershell
 cd frontend
 npm install
-cp .env.example .env.local
+Copy-Item .env.example .env.local
 npm run dev
 ```
 
-Di Windows PowerShell:
-
-```powershell
-Copy-Item .env.example .env.local
-```
-
-Buka `http://localhost:3000` di browser. Pastikan `NEXT_PUBLIC_API_URL` di `frontend/.env.local` mengarah ke backend, biasanya:
+Pastikan `frontend/.env.local` berisi:
 
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000/api
 ```
 
-## Akun demo
+Buka `http://localhost:3000`.
 
-Seeder menyediakan akun berikut dengan password `password`:
+### 4. Akun demo
+
+Seeder membuat akun berikut. Password semua akun adalah `password`.
 
 | Role | Email |
 | --- | --- |
@@ -80,143 +93,132 @@ Seeder menyediakan akun berikut dengan password `password`:
 | Manager | `manager@hotel.test` |
 | User | `darren@example.com` |
 
-Untuk penggunaan nyata, segera ganti atau nonaktifkan akun demo dan jangan memakai password tersebut di production.
+Ganti password atau nonaktifkan akun demo sebelum deployment production.
 
-## Cara menggunakan aplikasi
+## Alur operasional hotel
 
-1. Jalankan backend dan frontend.
-2. Login melalui halaman utama.
-3. Gunakan menu **Reservations** untuk membuat dan mengelola booking.
-4. Gunakan **Rooms** untuk melihat status kamar dan tipe kamar.
-5. Gunakan **Check-in / out** untuk proses kedatangan dan keberangkatan.
-6. Gunakan **Payments** untuk memproses pembayaran reservasi atau layanan.
-7. Gunakan **Services** untuk memilih layanan tambahan pada reservasi, mengatur jumlah orang, lalu meneruskan pembayaran.
-8. Gunakan **Facilities**, **Reports**, dan **Users** sesuai role akun.
+1. User, Receptionist, Manager, atau Admin membuat reservasi.
+2. Reservasi dapat dikaitkan ke user terdaftar atau tamu walk-in.
+3. Backend memeriksa overlap tanggal dan kapasitas kamar.
+4. Reservasi customer dimulai dari `Pending`; pembayaran deposit pertama atau konfirmasi staff mengubahnya menjadi `Confirmed`.
+5. Pembayaran dapat dicatat bertahap. Check-in tidak wajib lunas, sedangkan checkout wajib memiliki saldo nol.
+6. Check-in/check-out di luar jadwal membutuhkan alasan override staff dan seluruh aksi masuk audit log.
+7. Reservasi dapat dibatalkan atau ditandai `No Show`; pembayaran yang sudah masuk diselesaikan melalui refund tercatat.
+8. Setelah check-out, kamar berubah menjadi `Cleaning`. Setelah housekeeping selesai, staff mengubahnya menjadi `Available`.
+9. Pajak dan service charge dapat diatur Admin dan disimpan sebagai snapshot pada setiap reservasi.
+10. Dashboard dan laporan keuangan menghitung pembayaran dikurangi refund dan mengabaikan transaksi void.
 
-Hak akses utama:
+## Hak akses
 
-- **Admin:** akses penuh termasuk pengelolaan katalog dan pengguna.
-- **Receptionist:** operasional reservasi, kamar, check-in/out, pembayaran, dan laporan.
-- **Manager:** dashboard, operasional, pembayaran, dan laporan.
-- **User:** membuat reservasi, melihat layanan/fasilitas, dan melakukan pembayaran miliknya.
+- **Admin:** semua akses, termasuk master kamar, tipe kamar, service, fasilitas, user, dan status kamar.
+- **Receptionist:** booking tamu, walk-in guest, pembayaran, check-in/check-out, laporan, dan status housekeeping.
+- **Manager:** operasional, pembayaran, laporan, dan status housekeeping.
+- **User:** reservasi milik sendiri, service tambahan, dan pembayaran milik sendiri.
 
-## Environment variables
+## Endpoint utama
 
-Template environment disimpan dan boleh di-commit:
+Semua endpoint berikut selain login/register membutuhkan Bearer token:
 
-- `backend/.env.example`
-- `frontend/.env.example`
+```http
+Accept: application/json
+Authorization: Bearer <token>
+```
 
-File yang berisi konfigurasi lokal atau secret tidak boleh di-commit:
+- `POST /api/login`
+- `POST /api/register`
+- `GET /api/dashboard?date=YYYY-MM-DD`
+- `GET|POST /api/reservations`
+- `POST /api/reservations/{id}/payments`
+- `GET /api/reservations/{id}/folio`
+- `POST /api/payments/{id}/refund`
+- `POST /api/payments/{id}/void`
+- `POST /api/reservations/{id}/check-in`
+- `POST /api/reservations/{id}/check-out`
+- `POST /api/reservations/{id}/no-show`
+- `GET|PATCH /api/settings`
+- `GET /api/rooms/availability?check_in=...&check_out=...&guests=...`
+- `PATCH /api/rooms/{id}/status`
+- `GET /api/reports/occupancy?date=YYYY-MM-DD`
+- `GET /api/reports/revenue?from=YYYY-MM-DD&to=YYYY-MM-DD`
+- `GET /api/reports/reservations?from=YYYY-MM-DD&to=YYYY-MM-DD`
 
-- `backend/.env`
-- `frontend/.env.local`
-- environment file lain seperti `.env.production`
-
-`APP_KEY` pada backend dikosongkan di template dan harus dibuat dengan `php artisan key:generate`. `FRONTEND_URL` pada backend harus sama dengan URL frontend agar request API tidak ditolak oleh CORS.
-
-## Struktur folder
+## Struktur proyek
 
 ```text
 hotel-managementsystem/
-├── README.md
-├── backend/
-│   ├── app/
-│   │   ├── Http/Controllers/    # Controller API dan authorization flow
-│   │   ├── Models/              # Model Eloquent
-│   │   └── Services/            # Business logic aplikasi
-│   ├── bootstrap/               # Bootstrap Laravel
-│   ├── config/                  # Konfigurasi aplikasi, database, CORS, Sanctum
-│   ├── database/
-│   │   ├── migrations/          # Struktur database
-│   │   ├── seeders/              # Data awal/demo
-│   │   └── database.sqlite       # Database lokal bila memakai SQLite
-│   ├── public/                  # Entry point dan asset publik
-│   ├── resources/               # Resource Laravel
-│   ├── routes/                 # Route web, API, dan console
-│   ├── tests/                  # Unit dan feature tests
-│   ├── .env.example
-│   ├── .gitignore
-│   ├── artisan
-│   ├── composer.json
-│   └── phpunit.xml
-└── frontend/
-    ├── public/                 # Asset statis
-    ├── src/
-    │   ├── app/                # App Router, layout, global/page styles
-    │   ├── components/         # Komponen UI dan view dashboard
-    │   ├── config/             # Konfigurasi menu dan dashboard
-    │   ├── lib/                # Re-export/helper library
-    │   ├── services/           # API client, formatter, alert
-    │   └── types/              # TypeScript types
-    ├── .env.example
-    ├── .gitignore
-    ├── next.config.ts
-    ├── package.json
-    └── tsconfig.json
+├── backend/                  # Laravel REST API dan business logic
+│   ├── app/Models/            # Eloquent models
+│   ├── app/Services/          # Reservation dan hotel metrics service
+│   ├── app/Http/Controllers/  # Controller API
+│   ├── database/migrations/  # Schema hotel, membership, dan guest
+│   ├── database/seeders/     # Data demo
+│   ├── routes/api.php         # Endpoint API
+│   └── tests/                 # Feature dan unit test
+├── frontend/                 # Next.js dashboard
+│   ├── src/app/               # Root app dan navigasi
+│   ├── src/components/       # View UI hotel
+│   ├── src/services/         # API client, alert, formatter
+│   └── src/types/            # Kontrak data TypeScript
+└── README.md
 ```
 
-## Perintah development dan quality check
+## Perintah quality check
 
 Frontend:
 
-```bash
-npm run dev       # development server
-npm run lint      # ESLint
-npm run build     # production build
-npm run start     # menjalankan hasil build
+```powershell
+cd frontend
+npx tsc --noEmit
+npm run lint
+npm run build
 ```
 
 Backend:
 
-```bash
-php artisan test                 # seluruh test
-php artisan test --testsuite=Feature
-php artisan route:list            # daftar endpoint
-php artisan migrate:fresh --seed  # reset database lokal
+```powershell
+cd backend
+php artisan route:list
+php artisan migrate:status
+composer test
+vendor/bin/pint --dirty --format agent
 ```
 
-## Endpoint utama
+Jika test gagal dengan pesan `could not find driver` untuk SQLite, aktifkan ekstensi PHP `pdo_sqlite` dan `sqlite3`, lalu jalankan ulang test.
 
-- `POST /api/login` dan `POST /api/register`
-- `GET /api/dashboard`
-- `GET|POST /api/reservations`
-- `GET /api/rooms`, `/api/room-types`, `/api/facilities`, `/api/services`
-- `GET /api/payments`
-- `POST /api/reservations/{reservation}/payments`
-- `POST /api/reservations/{reservation}/check-in`
-- `POST /api/reservations/{reservation}/check-out`
+## Reset data lokal
 
-Endpoint yang membutuhkan login harus menerima header:
+Perintah ini menghapus dan membuat ulang seluruh tabel database lokal, lalu memasukkan data demo:
 
-```http
-Authorization: Bearer <token>
-Accept: application/json
+```powershell
+cd backend
+php artisan migrate:fresh --seed
 ```
+
+Jangan menjalankan perintah tersebut pada database production.
 
 ## Troubleshooting
 
-**Frontend tidak bisa memanggil API**
+### Frontend tidak dapat mengakses API
 
-- Pastikan backend berjalan di port 8000.
+- Pastikan backend berjalan di port `8000`.
 - Periksa `NEXT_PUBLIC_API_URL` di `frontend/.env.local`.
-- Pastikan `FRONTEND_URL=http://localhost:3000` di `backend/.env`.
-- Jalankan `php artisan config:clear` setelah mengubah `.env`.
+- Periksa `FRONTEND_URL` di `backend/.env`.
+- Setelah mengubah `.env`, jalankan `php artisan config:clear` dan restart server.
 
-**Database connection error**
+### Database gagal terhubung
 
 - Pastikan MySQL/MariaDB aktif.
 - Pastikan database `hotel_management` sudah dibuat.
 - Periksa `DB_HOST`, `DB_PORT`, `DB_DATABASE`, `DB_USERNAME`, dan `DB_PASSWORD`.
 
-**Login gagal setelah perubahan konfigurasi**
+### Migration belum berjalan
 
-```bash
-php artisan config:clear
-php artisan cache:clear
-php artisan migrate --seed
+```powershell
+cd backend
+php artisan migrate:status
+php artisan migrate
 ```
 
-## Catatan keamanan
+## Keamanan
 
-Jangan commit `.env`, token, password database, atau credential layanan eksternal. File `.env.example` hanya berisi nilai contoh dan memang sengaja tidak di-ignore oleh Git agar dapat menjadi template setup bagi developer lain.
+Jangan commit `backend/.env`, `frontend/.env.local`, token, password database, atau credential lain. File `.env.example` hanya digunakan sebagai template konfigurasi.

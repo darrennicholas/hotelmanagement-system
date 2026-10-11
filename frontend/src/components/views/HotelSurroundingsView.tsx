@@ -2,8 +2,8 @@
 
 import styles from '@/app/page.module.css';
 import { money } from '@/services/formatters';
-import type { Room } from '@/types';
-import { Empty, Panel, Status } from '@/components/ui';
+import type { Paginated, Room } from '@/types';
+import { Empty, Panel, Pagination, Status, UiIcon } from '@/components/ui';
 
 const roomImages = [
   'https://images.unsplash.com/photo-1611892440504-42a792e24d32?auto=format&fit=crop&w=900&q=85',
@@ -20,11 +20,11 @@ function roomDescription(room: Room) {
   return `${type}${capacity}${beds}. ${floor}.`;
 }
 
-export default function HotelSurroundingsView({ rooms }: { rooms: Room[] }) {
+export default function HotelSurroundingsView({ rooms, currency = 'IDR', pagination, onPageChange }: { rooms: Room[]; currency?: string; pagination?: Paginated<Room>; onPageChange?: (page: number) => void }) {
   return (
-    <Panel className={styles.surroundingsPanel} title="Hotel Surroundings" subtitle="Temukan pilihan kamar Haven yang tersedia untuk Anda.">
+    <Panel className={styles.surroundingsPanel} title="Hotel Surroundings">
       <div className={styles.surroundingsIntro}>
-        <div className={styles.surroundingsIntroIcon}>✦</div>
+        <div className={styles.surroundingsIntroIcon}><UiIcon name="sparkle" /></div>
         <div>
           <strong>Ruang nyaman untuk setiap perjalanan</strong>
           <p>Jelajahi kamar berdasarkan tipe, lantai, dan tarif yang tersedia.</p>
@@ -53,7 +53,7 @@ export default function HotelSurroundingsView({ rooms }: { rooms: Room[] }) {
                       <span className={styles.surroundingsEyebrow}>HAVEN HOTEL</span>
                       <h3>{room.room_type?.name ?? 'Kamar pilihan'}</h3>
                     </div>
-                    <strong>{money(room.room_type?.base_price)}</strong>
+                    <strong>{money(room.room_type?.base_price, currency)}</strong>
                   </div>
                   <p>{roomDescription(room)}</p>
                   <div className={styles.surroundingsMeta}>
@@ -68,6 +68,7 @@ export default function HotelSurroundingsView({ rooms }: { rooms: Room[] }) {
       ) : (
         <Empty text="Belum ada kamar yang dapat ditampilkan." />
       )}
+      {pagination && onPageChange && <Pagination currentPage={pagination.current_page} lastPage={pagination.last_page} total={pagination.total} onPageChange={onPageChange} />}
     </Panel>
   );
 }

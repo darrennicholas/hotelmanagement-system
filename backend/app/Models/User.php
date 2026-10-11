@@ -28,6 +28,11 @@ class User extends Authenticatable
         return $this->hasMany(Reservation::class);
     }
 
+    public function membership()
+    {
+        return $this->hasOne(Membership::class);
+    }
+
     public function hasRole(string|array $roles): bool
     {
         return in_array($this->role?->name, (array) $roles, true);

@@ -28,6 +28,7 @@ Buat database MySQL bernama `hotel_management`, lalu sesuaikan `.env`:
 
 ```env
 APP_URL=http://localhost:8000
+APP_TIMEZONE=Asia/Jakarta
 DB_CONNECTION=mysql
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -105,10 +106,15 @@ Route terautentikasi:
 - `POST /api/reservations/{reservation}/confirm`
 - `POST /api/reservations/{reservation}/check-in`
 - `POST /api/reservations/{reservation}/check-out`
+- `POST /api/reservations/{reservation}/no-show`
 - `POST /api/reservations/{reservation}/cancel`
 - `GET /api/rooms`, `/api/room-types`, `/api/facilities`, `/api/services`
 - `GET /api/payments`
 - `POST /api/reservations/{reservation}/payments`
+- `GET /api/reservations/{reservation}/folio`
+- `POST /api/payments/{payment}/refund`
+- `POST /api/payments/{payment}/void`
+- `GET /api/settings` dan `PATCH /api/settings` untuk Admin
 
 Endpoint admin untuk mengelola rooms, room types, facilities, users, dan services juga tersedia pada `routes/api.php`.
 
@@ -124,8 +130,8 @@ Authorization: Bearer <token>
 Test menggunakan SQLite in-memory sesuai konfigurasi `phpunit.xml`, sehingga tidak memerlukan database MySQL:
 
 ```bash
-php artisan test
-php artisan test --testsuite=Feature
+composer test
+composer test -- --testsuite=Feature
 ```
 
 Perintah berguna lainnya:

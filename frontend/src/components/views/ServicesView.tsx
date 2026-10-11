@@ -12,11 +12,13 @@ type Props = {
   services: HotelService[];
   reservations: Reservation[];
   canManage: boolean;
+  isUser: boolean;
   onSaved: () => void;
   onGoToPayments: (request: PendingServicePayment) => void;
+  currency?: string;
 };
 
-export default function ServicesView({ services, reservations, canManage, onSaved, onGoToPayments }: Props) {
+export default function ServicesView({ services, reservations, canManage, isUser, onSaved, onGoToPayments, currency = 'IDR' }: Props) {
   const [reservationId, setReservationId] = useState('');
   const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([]);
   const [quantity, setQuantity] = useState('1');
@@ -26,7 +28,7 @@ export default function ServicesView({ services, reservations, canManage, onSave
   const [form, setForm] = useState({ name: '', price: '', description: '' });
 
   const activeReservations = reservations.filter((reservation) => ['Pending', 'Confirmed', 'Checked In'].includes(reservation.status));
-  const availableServices = services.filter((service) => service.status);
+  const availableServices = isUser ? services : services.filter((service) => service.status);
   const selectedServices = availableServices.filter((service) => selectedServiceIds.includes(String(service.id)));
   const serviceQuantity = Number(quantity);
   const selectedTotal = selectedServices.reduce((total, service) => total + Number(service.price), 0) * (Number.isInteger(serviceQuantity) && serviceQuantity > 0 ? serviceQuantity : 0);
@@ -85,32 +87,31 @@ export default function ServicesView({ services, reservations, canManage, onSave
   }
 
   return <div className={styles.servicesStack}>
-    <Panel title="Tambah layanan ke reservasi" subtitle="Pilih booking, layanan tambahan, dan jumlah tamu yang akan dikenai biaya." action={<span className={styles.liveLabel}>{selectedServices.length} dipilih</span>}>
+    <Panel title="Tambah layanan ke reservasi">
       {error && <ErrorNotice message={error} />}
       <form className={styles.serviceBookingForm} onSubmit={payService}>
         <div className={styles.serviceReservationField}>
-          <div><span className={styles.serviceFieldLabel}>Reservasi</span><small>Pilih booking aktif untuk menambahkan layanan.</small></div>
-          <select required value={reservationId} onChange={(event) => setReservationId(event.target.value)}><option value="">Pilih reservasi</option>{activeReservations.map((reservation) => <option key={reservation.id} value={reservation.id}>{reservation.booking_number} · #{reservation.room?.room_number ?? '-'} · {reservation.user?.name ?? '-'}</option>)}</select>
+          <div><span className={styles.serviceFieldLabel}>Reservasi</span></div>
+          <select required value={reservationId} onChange={(event) => setReservationId(event.target.value)}><option value="">Pilih reservasi</option>{activeReservations.map((reservation) => <option key={reservation.id} value={reservation.id}>{reservation.booking_number} · #{reservation.room?.room_number ?? '-'} · {reservation.user?.name ?? reservation.guest?.full_name ?? '-'}</option>)}</select>
         </div>
         <div className={styles.serviceSelectionArea}>
-          <div className={styles.serviceSelectionHeader}><div><span className={styles.serviceFieldLabel}>Layanan tersedia</span><small>Pilih satu atau beberapa layanan untuk reservasi ini.</small></div><strong>{availableServices.length} tersedia</strong></div>
+          <div className={styles.serviceSelectionHeader}><div><span className={styles.serviceFieldLabel}>Layanan tersedia</span></div><strong>{availableServices.length} tersedia</strong></div>
           <div className={styles.serviceChecklist}>
-            {availableServices.map((service) => <label key={service.id} className={selectedServiceIds.includes(String(service.id)) ? styles.serviceChecked : ''}><input type="checkbox" checked={selectedServiceIds.includes(String(service.id))} onChange={() => toggleService(String(service.id))} /><span><strong>{service.name}</strong><small>{service.description || 'Layanan tambahan untuk kenyamanan Anda.'}</small></span><b>{money(service.price)}</b></label>)}
+            {availableServices.map((service) => <label key={service.id} className={selectedServiceIds.includes(String(service.id)) ? styles.serviceChecked : ''}><input type="checkbox" checked={selectedServiceIds.includes(String(service.id))} onChange={() => toggleService(String(service.id))} /><span><strong>{service.name}</strong></span><b>{money(service.price, currency)}</b></label>)}
             {!availableServices.length && <Empty text="Belum ada service aktif." />}
           </div>
         </div>
         <div className={styles.serviceBookingFooter}>
           <label className={styles.quantityControl}><span>Jumlah orang</span><div className={styles.quantityStepper}><button type="button" aria-label="Kurangi jumlah orang" onClick={() => adjustQuantity(-1)}>−</button><input required min="1" type="number" aria-label="Jumlah orang" value={quantity} onChange={(event) => setQuantity(event.target.value)} /><button type="button" aria-label="Tambah jumlah orang" onClick={() => adjustQuantity(1)}>+</button><em>orang</em></div></label>
-          <div className={styles.serviceTotal}><span>Perkiraan total</span><strong>{money(selectedTotal)}</strong><small>{selectedServices.length ? `${selectedServices.length} layanan × ${quantity || 0} orang` : 'Belum ada layanan dipilih'}</small></div>
+          <div className={styles.serviceTotal}><span>Perkiraan total</span><strong>{money(selectedTotal, currency)}</strong></div>
           <button className={styles.primaryButton} type="submit" disabled={!selectedServices.length || !reservationId}>Bayar layanan <span aria-hidden="true">→</span></button>
         </div>
       </form>
-      <p className={styles.serviceNote}>Jumlah orang berlaku untuk setiap layanan yang dicentang. Layanan baru masuk ke tagihan setelah pembayaran berhasil.</p>
     </Panel>
 
-    <Panel title="Services" subtitle="Katalog layanan tambahan yang bisa dibebankan ke reservasi" action={canManage ? <button className={styles.secondaryButton} onClick={() => setShowForm(!showForm)}>{showForm ? 'Tutup form' : '+ Add service'}</button> : undefined}>
+    <Panel title="Services" action={canManage ? <button className={styles.secondaryButton} onClick={() => setShowForm(!showForm)}>{showForm ? 'Tutup form' : '+ Add service'}</button> : undefined}>
       {showForm && canManage && <form className={styles.inlineForm} onSubmit={save}><input required placeholder="Nama service" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input required min="0" type="number" placeholder="Harga" value={form.price} onChange={(event) => setForm({ ...form, price: event.target.value })} /><input placeholder="Deskripsi" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /><button className={styles.primaryButton} disabled={saving}>{saving ? 'Menyimpan...' : 'Simpan'}</button></form>}
-      <div className={styles.table}><div className={styles.tableHead}><span>SERVICE</span><span>DESCRIPTION</span><span>PRICE</span><span>STATUS</span><span>ACTION</span></div>{services.map((service) => <div className={styles.tableRow} key={service.id}><strong>{service.name}</strong><span>{service.description || '-'}</span><span>{money(service.price)}</span><span><Status value={service.status ? 'Active' : 'Inactive'} /></span><span>{canManage ? <button disabled={saving} className={styles.rowActionButton} onClick={() => toggle(service)}>{service.status ? 'Nonaktifkan' : 'Aktifkan'}</button> : '-'}</span></div>)}</div>
+      <div className={styles.table}><div className={styles.tableHead}><span>SERVICE</span><span>DESCRIPTION</span><span>PRICE</span><span>STATUS</span><span>ACTION</span></div>{services.map((service) => <div className={styles.tableRow} key={service.id}><strong>{service.name}</strong><span>{service.description || '-'}</span><span>{money(service.price, currency)}</span><span><Status value={isUser || service.status ? 'Active' : 'Inactive'} /></span><span>{canManage ? <button disabled={saving} className={styles.rowActionButton} onClick={() => toggle(service)}>{service.status ? 'Nonaktifkan' : 'Aktifkan'}</button> : '-'}</span></div>)}</div>
       {!services.length && <Empty text="Belum ada service." />}
     </Panel>
   </div>;

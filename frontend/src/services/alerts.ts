@@ -26,3 +26,21 @@ export function successAlert(title: string, text: string) {
     customClass: { popup: 'successAlert' },
   });
 }
+
+export async function textPrompt(title: string, label: string, required = true) {
+  const result = await Swal.fire({
+    title,
+    input: 'textarea',
+    inputLabel: label,
+    inputPlaceholder: 'Tuliskan alasan yang jelas...',
+    inputValidator: required ? (value) => value.trim() ? undefined : 'Alasan wajib diisi.' : undefined,
+    showCancelButton: true,
+    confirmButtonText: 'Simpan',
+    cancelButtonText: 'Batal',
+    reverseButtons: true,
+    focusCancel: true,
+    customClass: { confirmButton: 'alertConfirm', cancelButton: 'alertCancel' },
+  });
+
+  return result.isConfirmed ? String(result.value ?? '').trim() : null;
+}

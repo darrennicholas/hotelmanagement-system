@@ -64,14 +64,14 @@ export default function FacilitiesView({ facilities, roomTypes, canManage, onSav
   }
 
   return <div className={styles.servicesStack}>
-    <Panel className={styles.facilitiesPanel} title="Facilities" subtitle="Fasilitas mengikuti tipe kamar yang dipesan" action={canManage ? <button className={styles.secondaryButton} onClick={() => setShowForm(!showForm)}>{showForm ? 'Tutup form' : '+ Add facility'}</button> : <span className={styles.liveLabel}>{facilities.length} fasilitas</span>}>
+    <Panel className={styles.facilitiesPanel} title="Facilities" action={canManage ? <button className={styles.secondaryButton} onClick={() => setShowForm(!showForm)}>{showForm ? 'Tutup form' : '+ Add facility'}</button> : undefined}>
       {error && <ErrorNotice message={error} />}
       {showForm && <form className={styles.inlineForm} onSubmit={save}><input required placeholder="Nama fasilitas" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} /><input placeholder="Deskripsi" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} /><button className={styles.primaryButton} disabled={saving}>{saving ? 'Menyimpan...' : 'Simpan'}</button></form>}
       <div className={styles.facilityList}>{facilities.map((facility) => <article className={styles.facilityItem} key={facility.id}><div className={styles.facilityIcon}>+</div><div className={styles.facilityInfo}><strong>{facility.name}</strong><span>{facility.description || 'Fasilitas standar untuk tamu hotel.'}</span></div><div className={styles.facilityRooms}><small>TERSEDIA DI</small><b>{facility.room_types?.length ? facility.room_types.map((roomType) => roomType.name).join(', ') : 'Belum dihubungkan ke tipe kamar'}</b></div></article>)}</div>
-      {!facilities.length && <Empty text="Belum ada fasilitas di database." />}
+      {!facilities.length && <Empty text="Belum ada fasilitas." />}
     </Panel>
 
-    {canManage && <Panel className={styles.facilitySettingsPanel} title="Atur fasilitas per tipe kamar" subtitle="Pengaturan ini akan ikut tampil pada kolom Facilities di Reservations">
+    {canManage && <Panel className={styles.facilitySettingsPanel} title="Atur fasilitas per tipe kamar">
       <form className={styles.facilityAssignment} onSubmit={saveRoomTypeFacilities}>
         <select required value={roomTypeId} onChange={(event) => chooseRoomType(event.target.value)}><option value="">Pilih tipe kamar</option>{roomTypes.map((roomType) => <option key={roomType.id} value={roomType.id}>{roomType.name}</option>)}</select>
         {roomTypeId ? <div className={styles.facilityChecks}>{facilities.map((facility) => <label key={facility.id}><input type="checkbox" checked={selectedFacilityIds.includes(facility.id)} onChange={() => toggleFacility(facility.id)} /> <span>{facility.name}</span></label>)}</div> : <p className={styles.serviceNote}>Pilih tipe kamar untuk mengatur fasilitasnya.</p>}

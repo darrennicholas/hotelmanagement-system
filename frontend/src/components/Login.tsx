@@ -44,11 +44,10 @@ export default function Login({ onLogin }: { onLogin: (user: User) => void }) {
     setLoading(true);
     try {
       if (mode === 'login') {
-        const result = await api<{ token: string; user: User }>('/login', {
+        const result = await api<{ user: User }>('/login', {
           method: 'POST',
           body: JSON.stringify({ email, password }),
         });
-        localStorage.setItem('hotel_token', result.token);
         onLogin(result.user);
       } else {
         await api('/register', {

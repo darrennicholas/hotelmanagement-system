@@ -1,16 +1,17 @@
 <?php
 
-use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\FacilityController;
 use App\Http\Controllers\HotelServiceController;
+use App\Http\Controllers\HotelSettingController;
 use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\ReportController;
 use App\Http\Controllers\ReservationController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\RoomTypeController;
 use App\Http\Controllers\UserController;
+use Illuminate\Support\Facades\Route;
 
 /*
 |--------------------------------------------------------------------------
@@ -21,12 +22,12 @@ use App\Http\Controllers\UserController;
 Route::post(
     '/login',
     [AuthController::class, 'login']
-);
+)->middleware('throttle:login');
 
 Route::post(
     '/register',
     [AuthController::class, 'register']
-);
+)->middleware('throttle:register');
 
 /*
 |--------------------------------------------------------------------------
@@ -34,7 +35,7 @@ Route::post(
 |--------------------------------------------------------------------------
 */
 
-Route::middleware('auth:sanctum')->group(function () {
+Route::middleware(['token.cookie', 'auth:sanctum'])->group(function () {
 
     /*
     |--------------------------------------------------------------------------
@@ -68,7 +69,6 @@ Route::middleware('auth:sanctum')->group(function () {
         DashboardController::class
     );
 
-
     /*
     |--------------------------------------------------------------------------
     | ROOMS
@@ -96,7 +96,6 @@ Route::middleware('auth:sanctum')->group(function () {
         'show',
     ]);
 
-
     /*
     |--------------------------------------------------------------------------
     | USERS LIST
@@ -111,7 +110,6 @@ Route::middleware('auth:sanctum')->group(function () {
         '/users',
         [UserController::class, 'index']
     );
-
 
     /*
     |--------------------------------------------------------------------------
@@ -130,7 +128,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post(
         '/reservations',
         [ReservationController::class, 'store']
-    )->middleware('role:User');
+    )->middleware('role:Admin,Receptionist,Manager,User');
 
     Route::get(
         '/reservations/{reservation}',
@@ -145,23 +143,32 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post(
         '/reservations/{reservation}/confirm',
         [ReservationController::class, 'confirm']
-    );
+    )->middleware('role:Admin,Receptionist,Manager');
 
     Route::post(
         '/reservations/{reservation}/check-in',
         [ReservationController::class, 'checkIn']
-    );
+    )->middleware('role:Admin,Receptionist,Manager');
 
     Route::post(
         '/reservations/{reservation}/check-out',
         [ReservationController::class, 'checkOut']
-    );
+    )->middleware('role:Admin,Receptionist,Manager');
+
+    Route::post(
+        '/reservations/{reservation}/no-show',
+        [ReservationController::class, 'noShow']
+    )->middleware('role:Admin,Receptionist,Manager');
 
     Route::post(
         '/reservations/{reservation}/cancel',
         [ReservationController::class, 'cancel']
     );
 
+    Route::post(
+        '/reservations/{reservation}/services',
+        [ReservationController::class, 'addService']
+    )->middleware('role:Admin,Receptionist,Manager,User');
 
     /*
     |--------------------------------------------------------------------------
@@ -174,7 +181,6 @@ Route::middleware('auth:sanctum')->group(function () {
         [FacilityController::class, 'index']
     );
 
-
     /*
     |--------------------------------------------------------------------------
     | PAYMENTS
@@ -186,11 +192,30 @@ Route::middleware('auth:sanctum')->group(function () {
         [PaymentController::class, 'index']
     );
 
+    Route::get(
+        '/reservations/{reservation}/folio',
+        [PaymentController::class, 'folio']
+    );
+
     Route::post(
         '/reservations/{reservation}/payments',
         [PaymentController::class, 'store']
-    )->middleware('role:User');
+    )->middleware('role:Admin,Receptionist,Manager,User');
 
+    Route::post(
+        '/payments/{payment}/refund',
+        [PaymentController::class, 'refund']
+    )->middleware('role:Admin,Manager');
+
+    Route::post(
+        '/payments/{payment}/void',
+        [PaymentController::class, 'void']
+    )->middleware('role:Admin');
+
+    Route::get(
+        '/settings',
+        [HotelSettingController::class, 'show']
+    );
 
     /*
     |--------------------------------------------------------------------------
@@ -216,6 +241,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::middleware(
         'role:Admin,Receptionist,Manager'
     )->group(function () {
+
+        Route::patch(
+            '/rooms/{room}/status',
+            [RoomController::class, 'updateStatus']
+        );
 
         /*
         |--------------------------------------------------------------------------
@@ -245,7 +275,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     });
 
-
     /*
     |--------------------------------------------------------------------------
     | ADMIN ONLY
@@ -271,7 +300,6 @@ Route::middleware('auth:sanctum')->group(function () {
             'destroy',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | ROOM TYPES
@@ -287,7 +315,6 @@ Route::middleware('auth:sanctum')->group(function () {
             'destroy',
         ]);
 
-
         /*
         |--------------------------------------------------------------------------
         | FACILITIES
@@ -302,7 +329,6 @@ Route::middleware('auth:sanctum')->group(function () {
             'update',
             'destroy',
         ]);
-
 
         /*
         |--------------------------------------------------------------------------
@@ -323,7 +349,6 @@ Route::middleware('auth:sanctum')->group(function () {
             [UserController::class, 'roles']
         );
 
-
         /*
         |--------------------------------------------------------------------------
         | SERVICES
@@ -337,5 +362,10 @@ Route::middleware('auth:sanctum')->group(function () {
             'store',
             'update',
         ]);
+
+        Route::patch(
+            '/settings',
+            [HotelSettingController::class, 'update']
+        );
     });
 });
